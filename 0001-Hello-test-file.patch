@@ -1,0 +1,74 @@
+From 42e037929730a347221936a6e7dd64119b47866d Mon Sep 17 00:00:00 2001
+From: Artem Zaiats <artem.zaiats@globallogic.com>
+Date: Fri, 27 Nov 2020 15:30:03 +0200
+Subject: [PATCH] Hello test file
+
+Added new module "Hello_gl" to kernel
+---
+ drivers/misc/Kconfig    |  7 +++++++
+ drivers/misc/Makefile   |  1 +
+ drivers/misc/hello_gl.c | 21 +++++++++++++++++++++
+ 3 files changed, 29 insertions(+)
+ create mode 100644 drivers/misc/hello_gl.c
+
+diff --git a/drivers/misc/Kconfig b/drivers/misc/Kconfig
+index 3726eacdf65d..b662ca50a07a 100644
+--- a/drivers/misc/Kconfig
++++ b/drivers/misc/Kconfig
+@@ -513,6 +513,13 @@ config MISC_RTSX
+ 	tristate
+ 	default MISC_RTSX_PCI || MISC_RTSX_USB
+ 
++config HELLO_GL
++	tristate "Hello module example"
++	default m
++	---help---
++	To compile this driver as a module, choose M
++	here: the module will be called hello_gl.
++
+ source "drivers/misc/c2port/Kconfig"
+ source "drivers/misc/eeprom/Kconfig"
+ source "drivers/misc/cb710/Kconfig"
+diff --git a/drivers/misc/Makefile b/drivers/misc/Makefile
+index af22bbc3d00c..95aec3d8b449 100644
+--- a/drivers/misc/Makefile
++++ b/drivers/misc/Makefile
+@@ -5,6 +5,7 @@
+ 
+ obj-$(CONFIG_IBM_ASM)		+= ibmasm/
+ obj-$(CONFIG_IBMVMC)		+= ibmvmc.o
++obj-$(CONFIG_HELLO_GL)		+= hello_gl.o
+ obj-$(CONFIG_AD525X_DPOT)	+= ad525x_dpot.o
+ obj-$(CONFIG_AD525X_DPOT_I2C)	+= ad525x_dpot-i2c.o
+ obj-$(CONFIG_AD525X_DPOT_SPI)	+= ad525x_dpot-spi.o
+diff --git a/drivers/misc/hello_gl.c b/drivers/misc/hello_gl.c
+new file mode 100644
+index 000000000000..8d25fe4019d7
+--- /dev/null
++++ b/drivers/misc/hello_gl.c
+@@ -0,0 +1,21 @@
++#include <linux/init.h>
++#include <linux/module.h>
++#include <linux/kernel.h>
++
++static int __init hello_init(void)
++{
++	printk("Hello world\n");
++	return 0;
++}
++
++static void __exit hello_exit(void)
++{
++	printk("Goodbye, world\n");
++}
++
++
++module_init(hello_init);
++module_exit(hello_exit);
++MODULE_LICENSE("GPL");
++MODULE_DESCRIPTION("Hello module");
++MODULE_AUTHOR("Artem Zaiats");
+\ No newline at end of file
+-- 
+2.17.1
+
