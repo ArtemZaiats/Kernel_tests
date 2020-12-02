@@ -1,0 +1,78 @@
+From bd7c451c868ab265c5f7de714607677edef98f13 Mon Sep 17 00:00:00 2001
+From: Artem Zaiats <artem.zaiats@globallogic.com>
+Date: Wed, 2 Dec 2020 17:30:48 +0200
+Subject: [PATCH] Added interrupt handling to the "Hello_gl" module.
+
+It print message when interrupt happens.
+This interrupt shared between original amba-pl011.c and hello_gl module.
+---
+ drivers/misc/hello_gl.c         | 25 ++++++++++++++++++++++++-
+ drivers/tty/serial/amba-pl011.c |  2 +-
+ 2 files changed, 25 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/misc/hello_gl.c b/drivers/misc/hello_gl.c
+index 8d25fe4019d7..6bd5655c274d 100644
+--- a/drivers/misc/hello_gl.c
++++ b/drivers/misc/hello_gl.c
+@@ -1,15 +1,38 @@
+ #include <linux/init.h>
+ #include <linux/module.h>
+ #include <linux/kernel.h>
++#include <linux/serial_core.h>
++#include <linux/irqreturn.h>
++
++
++typedef struct {
++	unsigned int irqn;	
++} device_id;
++
++static irqreturn_t intr_handler(int irqn, void *dev) 
++{
++	printk("Interrupt %d!", irqn);
++	return IRQ_HANDLED;
++}
++
++device_id my_dev = { .irqn = 54 };
+ 
+ static int __init hello_init(void)
+ {
+ 	printk("Hello world\n");
++
++
++	if (request_irq(my_dev.irqn, intr_handler, 
++					IRQF_SHARED, "device_id", &my_dev)) {
++		printk(KERN_ERR "hello_device: cannot register IRQ %d\n", my_dev.irqn);
++		return -EIO;
++	}
+ 	return 0;
+ }
+ 
+ static void __exit hello_exit(void)
+ {
++	free_irq(my_dev.irqn, &my_dev);
+ 	printk("Goodbye, world\n");
+ }
+ 
+@@ -18,4 +41,4 @@ module_init(hello_init);
+ module_exit(hello_exit);
+ MODULE_LICENSE("GPL");
+ MODULE_DESCRIPTION("Hello module");
+-MODULE_AUTHOR("Artem Zaiats");
+\ No newline at end of file
++MODULE_AUTHOR("Artem Zaiats");
+diff --git a/drivers/tty/serial/amba-pl011.c b/drivers/tty/serial/amba-pl011.c
+index ebd33c0232e6..6518edd9254d 100644
+--- a/drivers/tty/serial/amba-pl011.c
++++ b/drivers/tty/serial/amba-pl011.c
+@@ -1717,7 +1717,7 @@ static int pl011_allocate_irq(struct uart_amba_port *uap)
+ {
+ 	pl011_write(uap->im, uap, REG_IMSC);
+ 
+-	return request_irq(uap->port.irq, pl011_int, 0, "uart-pl011", uap);
++	return request_irq(uap->port.irq, pl011_int, IRQF_SHARED, "uart-pl011", uap);
+ }
+ 
+ /*
+-- 
+2.17.1
+
