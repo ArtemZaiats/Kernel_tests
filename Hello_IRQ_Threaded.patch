@@ -1,0 +1,76 @@
+From 0c49aca6f11fb287ef8e472b9fd88f1aa4f9d24b Mon Sep 17 00:00:00 2001
+From: Artem Zaiats <artem.zaiats@globallogic.com>
+Date: Thu, 3 Dec 2020 11:40:29 +0200
+Subject: [PATCH] Hello_IRQ_Threaded
+
+Interrupt handler switched to threaded interrupt version,
+print current process ID for interrupted context.
+---
+ drivers/misc/hello_gl.c | 29 +++++++++++++++++++++--------
+ 1 file changed, 21 insertions(+), 8 deletions(-)
+
+diff --git a/drivers/misc/hello_gl.c b/drivers/misc/hello_gl.c
+index 6bd5655c274d..ef7055dc24e0 100644
+--- a/drivers/misc/hello_gl.c
++++ b/drivers/misc/hello_gl.c
+@@ -3,6 +3,7 @@
+ #include <linux/kernel.h>
+ #include <linux/serial_core.h>
+ #include <linux/irqreturn.h>
++#include <linux/device.h>
+ 
+ 
+ typedef struct {
+@@ -11,7 +12,13 @@ typedef struct {
+ 
+ static irqreturn_t intr_handler(int irqn, void *dev) 
+ {
+-	printk("Interrupt %d!", irqn);
++	printk("Hello, %d!", irqn);
++	return IRQ_WAKE_THREAD;
++}
++
++static irqreturn_t intr_job(int irqn, void *dev)
++{
++	printk("%s: this is handler irq %d, pid %d \n", __func__, irqn, current->pid);
+ 	return IRQ_HANDLED;
+ }
+ 
+@@ -19,21 +26,27 @@ device_id my_dev = { .irqn = 54 };
+ 
+ static int __init hello_init(void)
+ {
+-	printk("Hello world\n");
+-
+-
+-	if (request_irq(my_dev.irqn, intr_handler, 
+-					IRQF_SHARED, "device_id", &my_dev)) {
+-		printk(KERN_ERR "hello_device: cannot register IRQ %d\n", my_dev.irqn);
++	int rc;
++	printk("Hello, world!\n");
++
++	rc = request_threaded_irq(my_dev.irqn, 
++								intr_handler, 
++								intr_job, 
++								IRQF_SHARED,
++								"my_device", 
++								&my_dev);
++
++	if (rc) {
++		printk(KERN_ERR "my_device: cannot register IRQ %d\n", my_dev.irqn);
+ 		return -EIO;
+ 	}
+-	return 0;
+ }
+ 
+ static void __exit hello_exit(void)
+ {
+ 	free_irq(my_dev.irqn, &my_dev);
+ 	printk("Goodbye, world\n");
++	return;
+ }
+ 
+ 
+-- 
+2.17.1
+
