@@ -1,0 +1,114 @@
+From 5d08e3b1188b090b61d86fceaeca6e12f0206a36 Mon Sep 17 00:00:00 2001
+From: Artem Zaiats <artem.zaiats@globallogic.com>
+Date: Thu, 3 Dec 2020 22:27:35 +0200
+Subject: [PATCH] Hello_Debugfs
+
+---
+ drivers/misc/hello_gl.c | 64 +++++++++++++++++++++++++++++++----------
+ 1 file changed, 49 insertions(+), 15 deletions(-)
+
+diff --git a/drivers/misc/hello_gl.c b/drivers/misc/hello_gl.c
+index ef7055dc24e0..b89ef7fe01d1 100644
+--- a/drivers/misc/hello_gl.c
++++ b/drivers/misc/hello_gl.c
+@@ -4,48 +4,82 @@
+ #include <linux/serial_core.h>
+ #include <linux/irqreturn.h>
+ #include <linux/device.h>
+-
++#include <linux/debugfs.h>
++#include <linux/spinlock.h>
+ 
+ typedef struct {
+-	unsigned int irqn;	
+-} device_id;
++	unsigned int irqn;
++	u32 counter;
++	spinlock_t lock;
++	struct dentry *dir;
++	struct dentry *file;
++} device_data;
++
++// See '/proc/interrupts'
++device_data hello_dev = { .irqn = 54 };
+ 
+ static irqreturn_t intr_handler(int irqn, void *dev) 
+ {
+-	printk("Hello, %d!", irqn);
+-	return IRQ_WAKE_THREAD;
++	unsigned long flags;
++	device_data *hellodev = dev;
++
++	spin_lock_irqsave(&hellodev->lock, flags);
++	++hellodev->counter;
++	spin_unlock_irqrestore(&hellodev->lock, flags);
++
++	return IRQ_HANDLED;
+ }
+ 
+ static irqreturn_t intr_job(int irqn, void *dev)
+ {
+-	printk("%s: this is handler irq %d, pid %d \n", __func__, irqn, current->pid);
++	//printk("%s: this is handler irq %d, pid %d \n", irqn, current->pid);
+ 	return IRQ_HANDLED;
+ }
+ 
+-device_id my_dev = { .irqn = 54 };
+-
+ static int __init hello_init(void)
+ {
+ 	int rc;
+-	printk("Hello, world!\n");
++	pr_info("Hello, world!\n");
++
++	/* reset device data */
++	hello_dev.counter = 0;
++
++	spin_lock_init(&hello_dev.lock);
+ 
+-	rc = request_threaded_irq(my_dev.irqn, 
++	/* Create debugfs dir */
++	hello_dev.dir = debugfs_create_dir("hellomodule", 0);
++	if(!hello_dev.dir){
++		pr_err("hello_device: failed to create dir debugfs/hellomodule\n");
++		return -EIO;
++	}
++
++	/* Create a file for counter */
++	hello_dev.file = debugfs_create_u32("counter", 0666, hello_dev.dir, &hello_dev.counter);
++	if(!hello_dev.file){
++		pr_err("hello_device: failed to create debugfs/hellomodule/counter\n");
++		return -EIO;
++	}
++
++	rc = request_threaded_irq(hello_dev.irqn, 
+ 								intr_handler, 
+ 								intr_job, 
+ 								IRQF_SHARED,
+-								"my_device", 
+-								&my_dev);
++								"hello_device", 
++								&hello_dev);
+ 
+ 	if (rc) {
+-		printk(KERN_ERR "my_device: cannot register IRQ %d\n", my_dev.irqn);
++		printk(KERN_ERR "my_device: cannot register IRQ %d\n", hello_dev.irqn);
+ 		return -EIO;
+ 	}
++	return 0;
+ }
+ 
+ static void __exit hello_exit(void)
+ {
+-	free_irq(my_dev.irqn, &my_dev);
+-	printk("Goodbye, world\n");
++	free_irq(hello_dev.irqn, &hello_dev);
++	debugfs_remove_recursive(hello_dev.dir);
++
++	pr_info("Goodbye, world\n");
+ 	return;
+ }
+ 
+-- 
+2.17.1
+
