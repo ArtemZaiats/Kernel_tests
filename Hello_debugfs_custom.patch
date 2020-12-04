@@ -1,0 +1,218 @@
+From 283ffcac7937e62a518bacf5ee84d3a866228c2a Mon Sep 17 00:00:00 2001
+From: Artem Zaiats <artem.zaiats@globallogic.com>
+Date: Fri, 4 Dec 2020 19:18:50 +0200
+Subject: [PATCH] Hello custom debugfs file!
+
+---
+ drivers/misc/hello_gl.c | 145 ++++++++++++++++++++++++++++++++++------
+ 1 file changed, 123 insertions(+), 22 deletions(-)
+
+diff --git a/drivers/misc/hello_gl.c b/drivers/misc/hello_gl.c
+index b89ef7fe01d1..271b2b7a6889 100644
+--- a/drivers/misc/hello_gl.c
++++ b/drivers/misc/hello_gl.c
+@@ -6,78 +6,179 @@
+ #include <linux/device.h>
+ #include <linux/debugfs.h>
+ #include <linux/spinlock.h>
++#include <linux/time.h>
++#include <linux/kfifo.h>
++
++typedef struct {
++	u32 counter;
++	struct timeval time;
++} my_timestamp_t;
+ 
+ typedef struct {
+ 	unsigned int irqn;
+ 	u32 counter;
+ 	spinlock_t lock;
+-	struct dentry *dir;
+-	struct dentry *file;
+-} device_data;
++	struct dentry *dir_debugfs;
++	struct dentry *counter_debugfs;
++	struct dentry *date_debugfs;
++	DECLARE_KFIFO_PTR(fifo, my_timestamp_t);
++} my_device_data_t;
++
++#define MYBUFFER_COUNT 2
++#define SEC_PER_MIN 60
++#define MYTIMESTAMP_SIZE_MAX 40
++#define MYSTR_SIZE_MAX 40
+ 
+ // See '/proc/interrupts'
+-device_data hello_dev = { .irqn = 54 };
++static my_device_data_t my_dev_data = { .irqn = 54 };
+ 
++/* timestamp debugfs IO handlers */
++static char ts_string[MYTIMESTAMP_SIZE_MAX] = { 0 };
++static DEFINE_SPINLOCK(ts_string_lock);
++
++static ssize_t timestamp_read(struct  file *f, char __user *buffer, size_t count, loff_t *f_pos)
++{
++	int ret;
++	unsigned long flags;
++	spin_lock_irqsave(&ts_string_lock, flags);
++	ret = simple_read_from_buffer(buffer, count, f_pos, ts_string, sizeof(ts_string));
++	spin_unlock_irqrestore(&ts_string_lock, flags);
++
++	return ret;	
++}
++
++struct file_operations timestamp_fops = {
++	.owner = THIS_MODULE,
++	.read = timestamp_read,
++	.write = NULL,
++};
++
++/* IRQ Handlers */
+ static irqreturn_t intr_handler(int irqn, void *dev) 
+ {
+ 	unsigned long flags;
+-	device_data *hellodev = dev;
++	my_device_data_t *mydev = dev;
++	my_timestamp_t new_timestamp = {};
+ 
+-	spin_lock_irqsave(&hellodev->lock, flags);
+-	++hellodev->counter;
+-	spin_unlock_irqrestore(&hellodev->lock, flags);
++	spin_lock_irqsave(&mydev->lock, flags);
+ 
+-	return IRQ_HANDLED;
++	do_gettimeofday(&new_timestamp.time);
++	++mydev->counter;
++	new_timestamp.counter = mydev->counter;
++
++	spin_unlock_irqrestore(&mydev->lock, flags);
++
++	return kfifo_in_spinlocked(&mydev->fifo,
++								&new_timestamp,
++								1,
++								&mydev->lock)
++	? IRQ_WAKE_THREAD
++	: IRQ_NONE;
+ }
+ 
+ static irqreturn_t intr_job(int irqn, void *dev)
+ {
+-	//printk("%s: this is handler irq %d, pid %d \n", irqn, current->pid);
++	my_device_data_t *mydev = dev;
++	my_timestamp_t ts;
++	struct tm time;
++	unsigned long flags;
++
++	while(!kfifo_is_empty(&mydev->fifo))
++	{
++		/* get one value from the buffer */
++		if(!kfifo_out_spinlocked(&mydev->fifo, &ts, 1, &mydev->lock))
++		{
++			break;
++		}
++
++		/* extract current date from the timeval */
++		time64_to_tm(ts.time.tv_sec, sys_tz.tz_minuteswest * SEC_PER_MIN, &time);
++
++		/* ts string write */
++		spin_lock_irqsave(&ts_string_lock, flags);
++
++		snprintf(ts_string, sizeof(ts_string),
++				"irq %u %d:%d:%d  %d-%d-%ld\n",
++				ts.counter,
++				time.tm_hour,
++				time.tm_min,
++				time.tm_sec,
++				time.tm_mday,
+++               time.tm_mon,
+++               1900 + time.tm_year);
++
++		spin_unlock_irqrestore(&ts_string_lock, flags);
++	}
++
+ 	return IRQ_HANDLED;
+ }
+ 
++/* Module interface */
++static inline void cleanup(void)
++{
++	debugfs_remove_recursive(my_dev_data.dir_debugfs);
++	kfifo_free(&my_dev_data.fifo);
++}
++
+ static int __init hello_init(void)
+ {
+ 	int rc;
+ 	pr_info("Hello, world!\n");
+ 
+ 	/* reset device data */
+-	hello_dev.counter = 0;
++	my_dev_data.counter = 0;
++
++	spin_lock_init(&my_dev_data.lock);
+ 
+-	spin_lock_init(&hello_dev.lock);
++	/* Allocate FIFO buffer*/
++	rc = kfifo_alloc(&my_dev_data.fifo, MYBUFFER_COUNT, GFP_ATOMIC);
++	if(rc) 
++	{
++		pr_err("hello_device: failed to allocate memory for fifo \n");
++		return rc;
++	}
+ 
+ 	/* Create debugfs dir */
+-	hello_dev.dir = debugfs_create_dir("hellomodule", 0);
+-	if(!hello_dev.dir){
++	my_dev_data.dir_debugfs = debugfs_create_dir("hellomodule", 0);
++	if(!my_dev_data.dir_debugfs){
+ 		pr_err("hello_device: failed to create dir debugfs/hellomodule\n");
+ 		return -EIO;
+ 	}
+ 
+ 	/* Create a file for counter */
+-	hello_dev.file = debugfs_create_u32("counter", 0666, hello_dev.dir, &hello_dev.counter);
+-	if(!hello_dev.file){
++	my_dev_data.counter_debugfs = debugfs_create_u32("counter", 0666, my_dev_data.dir_debugfs, &my_dev_data.counter);
++	if(!my_dev_data.counter_debugfs){
+ 		pr_err("hello_device: failed to create debugfs/hellomodule/counter\n");
+ 		return -EIO;
+ 	}
+ 
+-	rc = request_threaded_irq(hello_dev.irqn, 
++	my_dev_data.date_debugfs = debugfs_create_file("date", 0444, my_dev_data.dir_debugfs, NULL, &timestamp_fops);
++	if(!my_dev_data.date_debugfs) 
++	{
++		pr_err("hello_device: failed to create debugfs/hellomodule/date\n");
++		cleanup();
++		return -EIO;
++	}	
++
++	rc = request_threaded_irq(my_dev_data.irqn, 
+ 								intr_handler, 
+ 								intr_job, 
+ 								IRQF_SHARED,
+ 								"hello_device", 
+-								&hello_dev);
++								&my_dev_data);
+ 
+ 	if (rc) {
+-		printk(KERN_ERR "my_device: cannot register IRQ %d\n", hello_dev.irqn);
+-		return -EIO;
++		pr_err("hello_device: cannot register IRQ %d\n", my_dev_data.irqn);
++		cleanup();
++		return rc;
+ 	}
+ 	return 0;
+ }
+ 
+ static void __exit hello_exit(void)
+ {
+-	free_irq(hello_dev.irqn, &hello_dev);
+-	debugfs_remove_recursive(hello_dev.dir);
++	free_irq(my_dev_data.irqn, &my_dev_data);
++	cleanup();
+ 
+ 	pr_info("Goodbye, world\n");
+ 	return;
+-- 
+2.17.1
+
