@@ -1,0 +1,110 @@
+From 366673f446d01c950a5b04673e07a092a92cf18b Mon Sep 17 00:00:00 2001
+From: Artem Zaiats <artem.zaiats@globallogic.com>
+Date: Mon, 7 Dec 2020 19:31:24 +0200
+Subject: [PATCH] Debugfs control_buffer file
+
+---
+ drivers/misc/hello_gl.c | 56 +++++++++++++++++++++++++++++++++++++----
+ 1 file changed, 51 insertions(+), 5 deletions(-)
+
+diff --git a/drivers/misc/hello_gl.c b/drivers/misc/hello_gl.c
+index 271b2b7a6889..c0f3a420c64f 100644
+--- a/drivers/misc/hello_gl.c
++++ b/drivers/misc/hello_gl.c
+@@ -24,11 +24,16 @@ typedef struct {
+ 	DECLARE_KFIFO_PTR(fifo, my_timestamp_t);
+ } my_device_data_t;
+ 
+-#define MYBUFFER_COUNT 2
++#define MYBUFFER_COUNT 4
+ #define SEC_PER_MIN 60
+-#define MYTIMESTAMP_SIZE_MAX 40
+-#define MYSTR_SIZE_MAX 40
++#define MYTIMESTAMP_SIZE_MAX 1024
++#define MYSTR_SIZE_MAX 32
+ 
++const char START[] = "start";
++const char STOP[] = "stop";
++const char CLEAR[] = "clear";
++
++bool is_logging;
+ // See '/proc/interrupts'
+ static my_device_data_t my_dev_data = { .irqn = 54 };
+ 
+@@ -47,15 +52,55 @@ static ssize_t timestamp_read(struct  file *f, char __user *buffer, size_t count
+ 	return ret;	
+ }
+ 
++static ssize_t timestamp_write(struct file *f, const char __user *buffer, size_t count, loff_t *f_pos)
++{
++	char buf[32];
++	int buf_size;
++	u32 *val = f->private_data;
++
++	buf_size = min(count, (sizeof(buf) -1));
++	if (copy_from_user(buf, buffer, buf_size))
++		return -EFAULT;
++
++	if (strncmp(buf, START, strlen(START)) == 0) 
++	{
++		pr_info("Start logging\n");
++		is_logging = true;
++	} else {
++		if (strncmp(buf, STOP, strlen(STOP)) == 0) 
++		{
++			pr_info("Stop_logging\n");
++			is_logging = false;
++		} else {
++			if (strncmp(buf, CLEAR, strlen(CLEAR)) == 0)
++			{
++				pr_info("Clear log\n");
++				unsigned long flags;
++				spin_lock_irqsave(&ts_string_lock, flags);
++				memset(ts_string, 0, sizeof(ts_string));
++				spin_unlock_irqrestore(&ts_string_lock, flags);
++			} else {
++				pr_info("Unknown command. Use <start>, <stop> or <clear>. \n");
++			}
++		}
++	}
++
++	return count;
++}	
++
++
+ struct file_operations timestamp_fops = {
+ 	.owner = THIS_MODULE,
+ 	.read = timestamp_read,
+-	.write = NULL,
++	.write = timestamp_write,
+ };
+ 
+ /* IRQ Handlers */
+ static irqreturn_t intr_handler(int irqn, void *dev) 
+ {
++	if(!is_logging)
++		return IRQ_HANDLED;
++
+ 	unsigned long flags;
+ 	my_device_data_t *mydev = dev;
+ 	my_timestamp_t new_timestamp = {};
+@@ -126,6 +171,7 @@ static int __init hello_init(void)
+ 	pr_info("Hello, world!\n");
+ 
+ 	/* reset device data */
++	is_logging = true;
+ 	my_dev_data.counter = 0;
+ 
+ 	spin_lock_init(&my_dev_data.lock);
+@@ -152,7 +198,7 @@ static int __init hello_init(void)
+ 		return -EIO;
+ 	}
+ 
+-	my_dev_data.date_debugfs = debugfs_create_file("date", 0444, my_dev_data.dir_debugfs, NULL, &timestamp_fops);
++	my_dev_data.date_debugfs = debugfs_create_file("date", 0666, my_dev_data.dir_debugfs, NULL, &timestamp_fops);
+ 	if(!my_dev_data.date_debugfs) 
+ 	{
+ 		pr_err("hello_device: failed to create debugfs/hellomodule/date\n");
+-- 
+2.17.1
+
